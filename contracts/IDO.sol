@@ -8,8 +8,12 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 contract IDO is Ownable, ReentrancyGuard {
+
+    //Cancelled
+    bool _cancelled;
+
     //Status of IDO.
-    enum Status{before, inprogress, ended, closed}
+    enum Status{before, inprogress, ended, closed, cancelled}
     //Has liquidity been added.
     bool _liqAdded;
     //LP receiver.
@@ -99,6 +103,9 @@ contract IDO is Ownable, ReentrancyGuard {
     mapping(address => User) _users;
 
     function status() public view returns(Status) {
+        if(_cancelled) {
+            return Status.cancelled;
+        }
         if(block.timestamp >= _endDate + _vestingLength + _timeToClaim) {
             return Status.closed;
         }
@@ -127,27 +134,6 @@ contract IDO is Ownable, ReentrancyGuard {
         amount *= timeVested;
         amount /= _vestingLength;
         amount -= user.claimed;
-    }
-
-    function fundsUtilised() public view returns(uint tokenAmount, uint ONEAmount) {
-        ONEAmount = _asking > _totalDeposited ? _asking : _totalDeposited;
-        tokenAmount = (ONEAmount * _offering) / _asking;  
-    }
-
-    function fundsToLiquidity() public view returns(uint tokenAmount, uint ONEAmount) {
-        (tokenAmount, ONEAmount) = fundsUtilised();
-        tokenAmount *= _tptl;
-        tokenAmount /= 100;
-        ONEAmount *= _optl;
-        ONEAmount /= 100;
-    }
-
-    function fundsToUsers() public view returns(uint tokenAmount, uint ONEAmount) {
-        ONEAmount = _totalDeposited > _asking ? _totalDeposited - _asking : 0;
-        (tokenAmount,) = fundsUtilised();
-        uint tptu = 100 - _tptl;
-        tokenAmount *= tptu;
-        tokenAmount /= 100;
     }
 
     function depositCollateral() public nonReentrant {
@@ -198,12 +184,54 @@ contract IDO is Ownable, ReentrancyGuard {
         user.claimed -= toClaim;
     }
 
+    function withdraw() public nonReentrant {
+        require(status() == Status.ended, "Not able to withdraw excess at this time.");
+
+        (,uint ONEAmount) = fundsToUsers();
+
+        User storage user = _users[msg.sender];
+
+        require(!user.withdrawn, "Already withdrawn excess ONE.");
+
+        ONEAmount *= user.deposited;
+        ONEAmount /= _totalDeposited;
+        msg.sender.call{value: ONEAmount}("");
+
+        user.withdrawn = true;
+    }
+
     function addLiquidity() public {
-        require(status() == Status.ended, "Must wait for IDO to end before adding liquidity.");
+        require(status() == Status.ended, "Not able to add liquidity at this time.");
         require(!_liqAdded, "Liquidity already added.");
         (uint tokenAmount, uint ONEAmount) = fundsToLiquidity();
         _router.addLiquidityETH(address(_token), tokenAmount , tokenAmount, ONEAmount, _lpReceiver, block.timestamp);
         _liqAdded = true;
+    }
+
+    function fundsUtilised() public view returns(uint tokenAmount, uint ONEAmount) {
+        ONEAmount = _asking > _totalDeposited ? _asking : _totalDeposited;
+        tokenAmount = (ONEAmount * _offering) / _asking;  
+    }
+
+    function fundsToLiquidity() public view returns(uint tokenAmount, uint ONEAmount) {
+        (tokenAmount, ONEAmount) = fundsUtilised();
+        tokenAmount *= _tptl;
+        tokenAmount /= 100;
+        ONEAmount *= _optl;
+        ONEAmount /= 100;
+    }
+
+    function fundsToUsers() public view returns(uint tokenAmount, uint ONEAmount) {
+        ONEAmount = _totalDeposited > _asking ? _totalDeposited - _asking : 0;
+        (tokenAmount,) = fundsUtilised();
+        uint tptu = 100 - _tptl;
+        tokenAmount *= tptu;
+        tokenAmount /= 100;
+    }
+
+    function cancel() public onlyOwner {
+        require(status() == Status.before, "Can only cancel IDOs that haven't started or have not already been cancelled.");
+        _cancelled = true;
     }
 
     function withdrawTokens(uint amount) public onlyOwner nonReentrant {
