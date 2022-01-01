@@ -9,8 +9,10 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 contract IDO is Ownable, ReentrancyGuard {
 
-    //Cancelled
+    //Cancelled.
     bool _cancelled;
+    //Excess tokens and ONE received.
+    bool _excessReceived;
 
     //Status of IDO.
     enum Status{before, inprogress, ended, closed, cancelled}
@@ -37,8 +39,8 @@ contract IDO is Ownable, ReentrancyGuard {
     uint _tptl;
     //ONE percentage to liquidity;
     uint _optl;
-    //Receiver of ONE not diverted to liquidity.
-    address _excessONEReceiver;
+    //Receiver of tokens and ONE not diverted to liquidity.
+    address _excessReceiver;
     
 
     //Start timestamp.
@@ -61,7 +63,7 @@ contract IDO is Ownable, ReentrancyGuard {
         uint claimed;
     }
 
-    //Compiler doesn't like more than some dumb arbitrary number of variables in one call so a couple of things are grouped up.
+    //Compiler doesn't like more than a few variables in one call so a couple of things are grouped up.
     struct OfferingAsking {
         uint offering;
         uint asking;
@@ -75,7 +77,7 @@ contract IDO is Ownable, ReentrancyGuard {
         uint optl;
     }
 
-    constructor(IUniswapV2Router02 router, IERC20 token, address lpReceiver, IERC20 MIS, OfferingAsking memory offeringAsking, uint collateralRequired, Percentages memory percentages, address excessONEReceiver, Dates memory dates, uint vestingLength, uint timeToClaim) {
+    constructor(IUniswapV2Router02 router, IERC20 token, address lpReceiver, IERC20 MIS, OfferingAsking memory offeringAsking, uint collateralRequired, Percentages memory percentages, address excessReceiver, Dates memory dates, uint vestingLength, uint timeToClaim) {
         _router = router;
 
         _lpReceiver = lpReceiver;
@@ -90,7 +92,7 @@ contract IDO is Ownable, ReentrancyGuard {
         _tptl = percentages.tptl;
         _optl = percentages.optl;
 
-        _excessONEReceiver = excessONEReceiver;
+        _excessReceiver = excessReceiver;
 
         require(!(dates.endDate < dates.startDate), "End date cannot be before the start date.");
         _startDate = dates.startDate;
@@ -208,6 +210,8 @@ contract IDO is Ownable, ReentrancyGuard {
         _liqAdded = true;
     }
 
+    
+
     function fundsUtilised() public view returns(uint tokenAmount, uint ONEAmount) {
         ONEAmount = _asking > _totalDeposited ? _asking : _totalDeposited;
         tokenAmount = (ONEAmount * _offering) / _asking;  
@@ -229,7 +233,13 @@ contract IDO is Ownable, ReentrancyGuard {
         tokenAmount /= 100;
     }
 
-    function cancel() public onlyOwner {
+    function fundsToExcessReceiver() public view returns(uint tokenAmount, uint ONEAmount) {
+        (tokenAmount, ONEAmount) = fundsUtilised();
+        tokenAmount = _offering - tokenAmount;
+        ONEAmount = _totalDeposited - ONEAmount;
+    }
+
+    function cancel() public onlyOwner nonReentrant {
         require(status() == Status.before, "Can only cancel IDOs that haven't started or have not already been cancelled.");
         _cancelled = true;
     }
@@ -243,4 +253,18 @@ contract IDO is Ownable, ReentrancyGuard {
         require(status() == Status.closed);
         _MIS.transfer(msg.sender, amount);
     } 
+
+    function withdrawONE(uint amount) public onlyOwner nonReentrant {
+        require(status() == Status.closed);
+        msg.sender.call{value: amount}("");
+    }
+
+    function withdrawExcess() public nonReentrant {
+        require(status() == Status.ended);
+        require(!_excessReceived, "Already sent excess.");
+        (uint tokenAmount, uint ONEAmount) = fundsToExcessReceiver();
+        _token.transfer(_excessReceiver, tokenAmount);
+        _excessReceiver.call{value: ONEAmount}("");
+        _excessReceived = true;
+    }
 }
